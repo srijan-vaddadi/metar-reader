@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>METAR Reader - Aviation Weather Decoder</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-top: 20px;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #e94560, #0f3460);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: #a0a0a0;
+            font-size: 1.1rem;
+        }
+
+        .search-box {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+            margin-bottom: 30px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 15px 20px;
+            font-size: 1.2rem;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            transition: all 0.3s ease;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #e94560;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        input[type="text"]::placeholder {
+            color: rgba(255, 255, 255, 0.4);
+            text-transform: none;
+            letter-spacing: normal;
+        }
+
+        button {
+            padding: 15px 40px;
+            font-size: 1.1rem;
+            background: linear-gradient(135deg, #e94560, #533483);
+            border: none;
+            border-radius: 10px;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(233, 69, 96, 0.3);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .examples {
+            margin-top: 15px;
+            color: #a0a0a0;
+            font-size: 0.9rem;
+        }
+
+        .examples span {
+            color: #e94560;
+            cursor: pointer;
+            margin: 0 5px;
+            transition: color 0.2s;
+        }
+
+        .examples span:hover {
+            color: #fff;
+        }
+
+        .results {
+            display: none;
+        }
+
+        .results.show {
+            display: block;
+            animation: fadeIn 0.5s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .error-box {
+            background: rgba(233, 69, 96, 0.2);
+            border: 1px solid #e94560;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            color: #ff6b6b;
+        }
+
+        .raw-metar {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 1.1rem;
+            letter-spacing: 1px;
+            word-break: break-all;
+        }
+
+        .raw-metar-label {
+            color: #a0a0a0;
+            font-size: 0.85rem;
+            margin-bottom: 10px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        .weather-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+        }
+
+        .station-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .station-name {
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+
+        .flight-category {
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .flight-category.VFR {
+            background: #27ae60;
+        }
+
+        .flight-category.MVFR {
+            background: #3498db;
+        }
+
+        .flight-category.IFR {
+            background: #e74c3c;
+        }
+
+        .flight-category.LIFR {
+            background: #9b59b6;
+        }
+
+        .observation-time {
+            color: #a0a0a0;
+            font-size: 0.9rem;
+            margin-bottom: 25px;
+        }
+
+        .weather-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .weather-item {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.2s;
+        }
+
+        .weather-item:hover {
+            transform: translateY(-3px);
+        }
+
+        .weather-label {
+            color: #a0a0a0;
+            font-size: 0.85rem;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .weather-value {
+            font-size: 1.1rem;
+            line-height: 1.5;
+        }
+
+        .weather-icon {
+            font-size: 1.5rem;
+            margin-right: 10px;
+        }
+
+        .remarks-section {
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .remarks-section h3 {
+            color: #a0a0a0;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .remarks-text {
+            font-family: 'Courier New', monospace;
+            color: #ccc;
+            font-size: 0.9rem;
+        }
+
+        .remarks-decoded {
+            margin-top: 15px;
+        }
+
+        .remarks-decoded-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 0.95rem;
+            border-left: 3px solid #e94560;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #666;
+            font-size: 0.85rem;
+        }
+
+        footer a {
+            color: #e94560;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>METAR Reader</h1>
+            <p class="subtitle">Decode aviation weather reports into plain English</p>
+        </header>
+
+        <div class="search-box">
+            <form id="metar-form">
+                <div class="input-group">
+                    <input type="text"
+                           id="airport-code"
+                           name="airport_code"
+                           placeholder="Enter airport code (e.g., KJFK)"
+                           maxlength="4"
+                           autocomplete="off">
+                    <button type="submit" id="submit-btn">Get Weather</button>
+                </div>
+            </form>
+            <p class="examples">
+                Try:
+                <span onclick="setAirport('KJFK')">KJFK</span>
+                <span onclick="setAirport('EGLL')">EGLL</span>
+                <span onclick="setAirport('KLAX')">KLAX</span>
+                <span onclick="setAirport('KSFO')">KSFO</span>
+                <span onclick="setAirport('KORD')">KORD</span>
+                <span onclick="setAirport('VIDP')">VIDP</span>
+            </p>
+        </div>
+
+        <div id="results" class="results">
+            <!-- Results will be inserted here -->
+        </div>
+
+        <footer>
+            <p>Data provided by <a href="https://aviationweather.gov" target="_blank">Aviation Weather Center</a></p>
+        </footer>
+    </div>
+
+    <script>
+        const form = document.getElementById('metar-form');
+        const input = document.getElementById('airport-code');
+        const results = document.getElementById('results');
+        const submitBtn = document.getElementById('submit-btn');
+
+        function setAirport(code) {
+            input.value = code;
+            form.dispatchEvent(new Event('submit'));
+        }
+
+        function showLoading() {
+            results.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Fetching weather data...</p>
+                </div>
+            `;
+            results.classList.add('show');
+        }
+
+        function showError(message) {
+            results.innerHTML = `
+                <div class="error-box">
+                    <p>${message}</p>
+                </div>
+            `;
+            results.classList.add('show');
+        }
+
+        function getWeatherIcon(type) {
+            const icons = {
+                temperature: '🌡️',
+                wind: '💨',
+                visibility: '👁️',
+                clouds: '☁️',
+                weather: '🌧️',
+                dewpoint: '💧',
+                pressure: '📊'
+            };
+            return icons[type] || '📋';
+        }
+
+        function displayResults(data) {
+            const decoded = data.decoded;
+            const fc = decoded.flight_category;
+
+            let weatherItems = '';
+
+            if (decoded.temperature) {
+                weatherItems += `
+                    <div class="weather-item">
+                        <div class="weather-label">${getWeatherIcon('temperature')} Temperature</div>
+                        <div class="weather-value">${decoded.temperature}</div>
+                    </div>
+                `;
+            }
+
+            if (decoded.wind) {
+                weatherItems += `
+                    <div class="weather-item">
+                        <div class="weather-label">${getWeatherIcon('wind')} Wind</div>
+                        <div class="weather-value">${decoded.wind}</div>
+                    </div>
+                `;
+            }
+
+            if (decoded.visibility) {
+                weatherItems += `
+                    <div class="weather-item">
+                        <div class="weather-label">${getWeatherIcon('visibility')} Visibility</div>
+                        <div class="weather-value">${decoded.visibility}</div>
+                    </div>
+                `;
+            }
+
+            if (decoded.clouds && decoded.clouds.length > 0) {
+                weatherItems += `
+                    <div class="weather-item">
+                        <div class="weather-label">${getWeatherIcon('clouds')} Sky Conditions</div>
+                        <div class="weather-value">${decoded.clouds.join('<br>')}</div>
+                    </div>
+                `;
+            }
+
+            if (decoded.weather && decoded.weather.length > 0) {
+                weatherItems += `
+                    <div class="weather-item">
+                        <div class="weather-label">${getWeatherIcon('weather')} Weather</div>
+                        <div class="weather-value">${decoded.weather.join(', ')}</div>
+                    </div>
+                `;
+            }
+
+            if (decoded.dewpoint) {
+                weatherItems += `
+                    <div class="weather-item">
+                        <div class="weather-label">${getWeatherIcon('dewpoint')} Dewpoint</div>
+                        <div class="weather-value">${decoded.dewpoint}</div>
+                    </div>
+                `;
+            }
+
+            if (decoded.altimeter) {
+                weatherItems += `
+                    <div class="weather-item">
+                        <div class="weather-label">${getWeatherIcon('pressure')} Pressure</div>
+                        <div class="weather-value">${decoded.altimeter}</div>
+                    </div>
+                `;
+            }
+
+            let remarksSection = '';
+            if (decoded.remarks) {
+                let decodedRemarksHtml = '';
+                if (decoded.remarks_decoded && decoded.remarks_decoded.length > 0) {
+                    decodedRemarksHtml = `
+                        <div class="remarks-decoded">
+                            ${decoded.remarks_decoded.map(r => `<div class="remarks-decoded-item">${r}</div>`).join('')}
+                        </div>
+                    `;
+                }
+                remarksSection = `
+                    <div class="remarks-section">
+                        <h3>Remarks</h3>
+                        <p class="remarks-text">${decoded.remarks}</p>
+                        ${decodedRemarksHtml}
+                    </div>
+                `;
+            }
+
+            results.innerHTML = `
+                <div class="raw-metar">
+                    <div class="raw-metar-label">Raw METAR</div>
+                    ${data.raw_metar}
+                </div>
+                <div class="weather-card">
+                    <div class="station-header">
+                        <div class="station-name">${decoded.station || 'Unknown Station'}</div>
+                        <div class="flight-category ${fc.category}">${fc.category}</div>
+                    </div>
+                    <div class="observation-time">${decoded.time || 'Time unknown'}</div>
+                    <div class="weather-grid">
+                        ${weatherItems}
+                    </div>
+                    ${remarksSection}
+                </div>
+            `;
+            results.classList.add('show');
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const airportCode = input.value.trim();
+            if (!airportCode) {
+                showError('Please enter an airport code');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            showLoading();
+
+            try {
+                const formData = new FormData();
+                formData.append('airport_code', airportCode);
+
+                const response = await fetch('/metar', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                } else {
+                    displayResults(data);
+                }
+            } catch (error) {
+                showError('Failed to fetch weather data. Please try again.');
+                console.error(error);
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+
+        // Auto-uppercase input
+        input.addEventListener('input', () => {
+            input.value = input.value.toUpperCase();
+        });
+    </script>
+</body>
+</html>
