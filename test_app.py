@@ -7,6 +7,7 @@ Tests cover:
     - Weather phenomena (rain, snow, fog, etc.)
     - Cloud coverage (FEW, SCT, BKN, OVC)
     - Temperature/dewpoint (positive, negative)
+    - Relative humidity calculation
     - Altimeter settings (US and international)
     - Remarks decoding (AO2, SLP, precipitation, etc.)
     - Flight category determination (VFR/MVFR/IFR/LIFR)
@@ -32,6 +33,7 @@ from app import (
     determine_flight_category,
     fetch_metar,
     generate_summary,
+    calculate_relative_humidity,
 )
 
 
@@ -374,43 +376,55 @@ class TestDecodeTempDewpoint:
 
     def test_positive_temps(self):
         """Test positive temperature and dewpoint."""
-        temp, dew = decode_temp_dewpoint("25/20")
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint("25/20")
         assert "25°C" in temp
         assert "77°F" in temp
         assert "20°C" in dew
         assert "68°F" in dew
+        assert temp_c == 25
+        assert dew_c == 20
 
     def test_negative_temp(self):
         """Test negative temperature (M prefix)."""
-        temp, dew = decode_temp_dewpoint("M05/M10")
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint("M05/M10")
         assert "-5°C" in temp
         assert "23°F" in temp
         assert "-10°C" in dew
         assert "14°F" in dew
+        assert temp_c == -5
+        assert dew_c == -10
 
     def test_mixed_temps(self):
         """Test mixed positive/negative temps."""
-        temp, dew = decode_temp_dewpoint("02/M01")
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint("02/M01")
         assert "2°C" in temp
         assert "-1°C" in dew
+        assert temp_c == 2
+        assert dew_c == -1
 
     def test_zero_temp(self):
         """Test zero temperature."""
-        temp, dew = decode_temp_dewpoint("00/M02")
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint("00/M02")
         assert "0°C" in temp
         assert "32°F" in temp
+        assert temp_c == 0
+        assert dew_c == -2
 
     def test_none_input(self):
         """Test None input returns None."""
-        temp, dew = decode_temp_dewpoint(None)
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint(None)
         assert temp is None
         assert dew is None
+        assert temp_c is None
+        assert dew_c is None
 
     def test_invalid_format(self):
         """Test invalid format returns None."""
-        temp, dew = decode_temp_dewpoint("INVALID")
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint("INVALID")
         assert temp is None
         assert dew is None
+        assert temp_c is None
+        assert dew_c is None
 
 
 # =============================================================================
@@ -454,6 +468,80 @@ class TestDecodeAltimeter:
 
 
 # =============================================================================
+# Relative Humidity Tests
+# =============================================================================
+
+class TestCalculateRelativeHumidity:
+    """Tests for calculate_relative_humidity function."""
+
+    def test_saturated_air(self):
+        """Test 100% humidity when temp equals dewpoint."""
+        rh = calculate_relative_humidity(20, 20)
+        assert rh == 100.0
+
+    def test_typical_conditions(self):
+        """Test typical weather conditions."""
+        # 25°C temp, 20°C dewpoint should give ~74% humidity
+        rh = calculate_relative_humidity(25, 20)
+        assert 70 <= rh <= 78
+
+    def test_dry_conditions(self):
+        """Test dry conditions with large temp-dewpoint spread."""
+        # 30°C temp, 10°C dewpoint should give ~27% humidity
+        rh = calculate_relative_humidity(30, 10)
+        assert 25 <= rh <= 30
+
+    def test_cold_conditions(self):
+        """Test cold temperature conditions."""
+        # -5°C temp, -10°C dewpoint
+        rh = calculate_relative_humidity(-5, -10)
+        assert 60 <= rh <= 75
+
+    def test_freezing_point(self):
+        """Test at freezing point."""
+        rh = calculate_relative_humidity(0, -2)
+        assert 85 <= rh <= 90
+
+    def test_hot_humid_conditions(self):
+        """Test hot and humid conditions."""
+        # 35°C temp, 30°C dewpoint should give ~77% humidity
+        rh = calculate_relative_humidity(35, 30)
+        assert 70 <= rh <= 80
+
+    def test_none_temperature(self):
+        """Test None temperature returns None."""
+        rh = calculate_relative_humidity(None, 20)
+        assert rh is None
+
+    def test_none_dewpoint(self):
+        """Test None dewpoint returns None."""
+        rh = calculate_relative_humidity(20, None)
+        assert rh is None
+
+    def test_both_none(self):
+        """Test both None returns None."""
+        rh = calculate_relative_humidity(None, None)
+        assert rh is None
+
+    def test_result_is_rounded(self):
+        """Test that result is rounded to one decimal place."""
+        rh = calculate_relative_humidity(25, 20)
+        # Should be a float with at most one decimal place
+        assert rh == round(rh, 1)
+
+    def test_clamp_to_100(self):
+        """Test humidity is clamped to 100% max."""
+        # Even if dewpoint slightly exceeds temp due to measurement precision
+        rh = calculate_relative_humidity(20, 20)
+        assert rh <= 100.0
+
+    def test_clamp_to_0(self):
+        """Test humidity doesn't go below 0%."""
+        rh = calculate_relative_humidity(50, -40)
+        assert rh >= 0
+
+
+# =============================================================================
 # Full METAR Decoder Tests
 # =============================================================================
 
@@ -474,8 +562,30 @@ class TestDecodeMetar:
         assert len(result["clouds"]) == 3
         assert "-1°C" in result["temperature"]
         assert "-5°C" in result["dewpoint"]
+        assert result["relative_humidity"] is not None
+        assert "%" in result["relative_humidity"]
         assert "30.14" in result["altimeter"]
         assert "AO2" in result["remarks"]
+
+    def test_metar_relative_humidity(self):
+        """Test relative humidity calculation in METAR decoding."""
+        # 25°C temp, 20°C dewpoint should give ~74% humidity
+        metar = "METAR KTEST 271951Z 00000KT 10SM SKC 25/20 A3014"
+        result = decode_metar(metar)
+
+        assert result["relative_humidity"] is not None
+        # Extract numeric value from "74.3%"
+        rh_value = float(result["relative_humidity"].replace("%", ""))
+        assert 70 <= rh_value <= 78
+
+    def test_metar_saturated_humidity(self):
+        """Test 100% humidity when temp equals dewpoint."""
+        metar = "METAR KTEST 271951Z 00000KT 1SM FG 10/10 A3014"
+        result = decode_metar(metar)
+
+        # When temp equals dewpoint, humidity is 100%
+        assert "100" in result["relative_humidity"]
+        assert "%" in result["relative_humidity"]
 
     def test_metar_with_weather(self):
         """Test METAR with weather phenomena."""
@@ -667,6 +777,7 @@ class TestGenerateSummary:
             "clouds": ["Few clouds at 3,000 feet"],
             "weather": ["Light Rain"],
             "dewpoint": "3°C (37°F)",
+            "relative_humidity": "85.2%",
             "altimeter": "30.14 inHg",
             "flight_category": {"category": "VFR", "description": "Good conditions"},
             "remarks": "AO2"
@@ -679,6 +790,29 @@ class TestGenerateSummary:
         assert "North" in result
         assert "10 miles" in result
         assert "VFR" in result
+        assert "Relative Humidity: 85.2%" in result
+
+    def test_summary_without_humidity(self):
+        """Test summary generation without relative humidity."""
+        decoded = {
+            "station": "KJFK",
+            "time": "Day 27 at 19:51 UTC",
+            "temperature": "5°C (41°F)",
+            "wind": "From North at 10 knots",
+            "visibility": "10 miles (excellent)",
+            "clouds": ["Few clouds at 3,000 feet"],
+            "weather": [],
+            "dewpoint": "3°C (37°F)",
+            "relative_humidity": None,
+            "altimeter": "30.14 inHg",
+            "flight_category": {"category": "VFR", "description": "Good conditions"},
+            "remarks": None
+        }
+
+        result = generate_summary(decoded)
+
+        assert "KJFK" in result
+        assert "Relative Humidity" not in result
 
     def test_none_input(self):
         """Test None input."""
@@ -758,13 +892,13 @@ class TestEdgeCases:
 
     def test_freezing_temperature(self):
         """Test exactly freezing temperature."""
-        temp, _ = decode_temp_dewpoint("00/M02")
+        temp, _, _, _ = decode_temp_dewpoint("00/M02")
         assert "0°C" in temp
         assert "32°F" in temp
 
     def test_very_negative_temperature(self):
         """Test very cold temperature."""
-        temp, dew = decode_temp_dewpoint("M40/M45")
+        temp, dew, _, _ = decode_temp_dewpoint("M40/M45")
         assert "-40°C" in temp
         assert "-45°C" in dew
 
@@ -780,13 +914,15 @@ class TestEdgeCases:
 
     def test_temp_dewpoint_too_many_parts(self):
         """Test temp/dewpoint with too many parts."""
-        temp, dew = decode_temp_dewpoint("05/03/01")
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint("05/03/01")
         assert temp is None
         assert dew is None
+        assert temp_c is None
+        assert dew_c is None
 
     def test_temp_dewpoint_empty_parts(self):
         """Test temp/dewpoint with empty parts."""
-        temp, dew = decode_temp_dewpoint("/03")
+        temp, dew, temp_c, dew_c = decode_temp_dewpoint("/03")
         # First part is empty, should handle gracefully
         assert temp is None or dew is not None
 

@@ -12,6 +12,7 @@ Usage:
 from flask import Flask, render_template, request, jsonify
 import requests
 import re
+import math
 
 app = Flask(__name__)
 
@@ -239,13 +240,17 @@ def decode_clouds(cloud_str):
 
 
 def decode_temp_dewpoint(temp_str):
-    """Decode temperature and dewpoint."""
+    """Decode temperature and dewpoint.
+
+    Returns:
+        Tuple of (temp_text, dewpoint_text, temp_celsius, dewpoint_celsius)
+    """
     if not temp_str or '/' not in temp_str:
-        return None, None
+        return None, None, None, None
 
     parts = temp_str.split('/')
     if len(parts) != 2:
-        return None, None
+        return None, None, None, None
 
     def parse_temp(t):
         if not t:
@@ -268,7 +273,7 @@ def decode_temp_dewpoint(temp_str):
         dewpoint_f = (dewpoint * 9/5) + 32
         dewpoint_text = f"{dewpoint}°C ({dewpoint_f:.0f}°F)"
 
-    return temp_text, dewpoint_text
+    return temp_text, dewpoint_text, temp, dewpoint
 
 
 def decode_altimeter(alt_str):
@@ -289,6 +294,38 @@ def decode_altimeter(alt_str):
         return f"{value} hPa ({inhg:.2f} inHg)"
 
     return None
+
+
+def calculate_relative_humidity(temp_celsius, dewpoint_celsius):
+    """Calculate relative humidity from temperature and dewpoint.
+
+    Uses the Magnus formula for accurate humidity calculation.
+
+    Args:
+        temp_celsius: Temperature in degrees Celsius
+        dewpoint_celsius: Dewpoint in degrees Celsius
+
+    Returns:
+        Relative humidity as a percentage (0-100), or None if inputs invalid
+    """
+    if temp_celsius is None or dewpoint_celsius is None:
+        return None
+
+    # Magnus formula constants
+    a = 17.625
+    b = 243.04
+
+    # Calculate relative humidity
+    try:
+        exp_dewpoint = math.exp((a * dewpoint_celsius) / (b + dewpoint_celsius))
+        exp_temp = math.exp((a * temp_celsius) / (b + temp_celsius))
+        rh = 100 * (exp_dewpoint / exp_temp)
+
+        # Clamp to valid range (can exceed 100% slightly due to measurement precision)
+        rh = max(0, min(100, rh))
+        return round(rh, 1)
+    except (ValueError, ZeroDivisionError):
+        return None
 
 
 def decode_remarks(remarks_str):
@@ -494,6 +531,7 @@ def decode_metar(metar_text):
         'clouds': [],
         'temperature': None,
         'dewpoint': None,
+        'relative_humidity': None,
         'altimeter': None,
         'remarks': None,
         'remarks_decoded': None,
@@ -582,9 +620,13 @@ def decode_metar(metar_text):
 
         # Check for temperature/dewpoint
         if '/' in part and re.match(r'^M?\d{2}/M?\d{2}$', part):
-            temp, dew = decode_temp_dewpoint(part)
+            temp, dew, temp_c, dew_c = decode_temp_dewpoint(part)
             decoded['temperature'] = temp
             decoded['dewpoint'] = dew
+            # Calculate relative humidity
+            rh = calculate_relative_humidity(temp_c, dew_c)
+            if rh is not None:
+                decoded['relative_humidity'] = f"{rh}%"
             i += 1
             continue
 
@@ -681,6 +723,9 @@ def generate_summary(decoded):
 
     if decoded['dewpoint']:
         conditions.append(f"Dewpoint: {decoded['dewpoint']}")
+
+    if decoded['relative_humidity']:
+        conditions.append(f"Relative Humidity: {decoded['relative_humidity']}")
 
     if decoded['altimeter']:
         conditions.append(f"Pressure: {decoded['altimeter']}")
