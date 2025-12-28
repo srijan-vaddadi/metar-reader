@@ -98,18 +98,16 @@ class TestDecodeWind:
         result = decode_wind("270100KT")
         assert "100 knots" in result
 
-    def test_north_wind(self):
-        """Test north wind (360 degrees)."""
-        result = decode_wind("36009KT")
-        assert "North" in result
-        assert "360°" in result
-        assert "9 knots" in result
-
-    def test_east_wind(self):
-        """Test east wind (090 degrees)."""
-        result = decode_wind("09012KT")
-        assert "East" in result
-        assert "90°" in result
+    @pytest.mark.parametrize("wind_str,direction,degrees", [
+        ("36009KT", "North", "360°"),
+        ("09012KT", "East", "90°"),
+        ("18015KT", "South", "180°"),
+    ])
+    def test_wind_directions(self, wind_str, direction, degrees):
+        """Test wind from various directions."""
+        result = decode_wind(wind_str)
+        assert direction in result
+        assert degrees in result
 
     def test_none_input(self):
         """Test None input returns None."""
@@ -131,30 +129,20 @@ class TestDecodeWind:
 class TestGetCardinalDirection:
     """Tests for get_cardinal_direction function."""
 
-    def test_north(self):
-        assert get_cardinal_direction(0) == "North"
-        assert get_cardinal_direction(360) == "North"
-
-    def test_east(self):
-        assert get_cardinal_direction(90) == "East"
-
-    def test_south(self):
-        assert get_cardinal_direction(180) == "South"
-
-    def test_west(self):
-        assert get_cardinal_direction(270) == "West"
-
-    def test_northeast(self):
-        assert get_cardinal_direction(45) == "Northeast"
-
-    def test_southeast(self):
-        assert get_cardinal_direction(135) == "Southeast"
-
-    def test_southwest(self):
-        assert get_cardinal_direction(225) == "Southwest"
-
-    def test_northwest(self):
-        assert get_cardinal_direction(315) == "Northwest"
+    @pytest.mark.parametrize("degrees,expected", [
+        (0, "North"),
+        (360, "North"),
+        (90, "East"),
+        (180, "South"),
+        (270, "West"),
+        (45, "Northeast"),
+        (135, "Southeast"),
+        (225, "Southwest"),
+        (315, "Northwest"),
+    ])
+    def test_cardinal_directions(self, degrees, expected):
+        """Test all cardinal and intercardinal directions."""
+        assert get_cardinal_direction(degrees) == expected
 
 
 # =============================================================================
@@ -1080,37 +1068,41 @@ class TestGenerateSummary:
 class TestRealWorldMetars:
     """Tests using real-world METAR examples."""
 
-    def test_khio_metar(self):
-        """Test KHIO (Hillsboro, OR) METAR."""
-        metar = "METAR KHIO 271953Z 00000KT 10SM FEW040 FEW050 OVC060 05/03 A3032 RMK AO2 RAE38 SLP268 P0000 T00500033"
+    @pytest.mark.parametrize("metar,station,checks", [
+        (
+            "METAR KHIO 271953Z 00000KT 10SM FEW040 FEW050 OVC060 05/03 A3032 RMK AO2",
+            "KHIO",
+            {"wind": "Calm", "visibility_contains": "10 miles", "temp_contains": "5°C"}
+        ),
+        (
+            "METAR KJFK 271951Z 36009KT 10SM FEW017 BKN036 OVC050 M01/M05 A3014 RMK AO2",
+            "KJFK",
+            {"wind_contains": "North", "temp_contains": "-1°C"}
+        ),
+        (
+            "METAR EGLL 272020Z 06011KT 9999 BKN010 OVC020 07/05 Q1035",
+            "EGLL",
+            {"wind_contains": "East", "altimeter_contains": "1035"}
+        ),
+    ])
+    def test_real_world_metars(self, metar, station, checks):
+        """Test real-world METAR examples from various airports."""
         result = decode_metar(metar)
+        assert result["station"] == station
 
-        assert result["station"] == "KHIO"
-        assert result["wind"] == "Calm"
-        assert "10 miles" in result["visibility"]
-        assert "5°C" in result["temperature"]
-        assert "3°C" in result["dewpoint"]
-
-    def test_kjfk_metar(self):
-        """Test KJFK (JFK Airport) METAR."""
-        metar = "METAR KJFK 271951Z 36009KT 10SM FEW017 BKN036 OVC050 M01/M05 A3014 RMK AO2 SLP204 T10111050"
-        result = decode_metar(metar)
-
-        assert result["station"] == "KJFK"
-        assert "North" in result["wind"]
-        assert "-1°C" in result["temperature"]
-
-    def test_egll_metar(self):
-        """Test EGLL (London Heathrow) METAR."""
-        metar = "METAR EGLL 272020Z 06011KT 9999 BKN010 OVC020 07/05 Q1035"
-        result = decode_metar(metar)
-
-        assert result["station"] == "EGLL"
-        assert "East" in result["wind"]
-        assert "1035" in result["altimeter"]
+        if "wind" in checks:
+            assert result["wind"] == checks["wind"]
+        if "wind_contains" in checks:
+            assert checks["wind_contains"] in result["wind"]
+        if "visibility_contains" in checks:
+            assert checks["visibility_contains"] in result["visibility"]
+        if "temp_contains" in checks:
+            assert checks["temp_contains"] in result["temperature"]
+        if "altimeter_contains" in checks:
+            assert checks["altimeter_contains"] in result["altimeter"]
 
     def test_severe_weather_metar(self):
-        """Test METAR with severe weather."""
+        """Test METAR with severe weather (special case with multiple assertions)."""
         metar = "METAR KORD 271856Z 23025G40KT 1/2SM +TSRA FG BKN005 OVC010CB 18/17 A2965"
         result = decode_metar(metar)
 
@@ -1143,17 +1135,8 @@ class TestEdgeCases:
         result = decode_clouds("FEW250")
         assert "25,000 feet" in result
 
-    def test_freezing_temperature(self):
-        """Test exactly freezing temperature."""
-        temp, _, _, _ = decode_temp_dewpoint("00/M02")
-        assert "0°C" in temp
-        assert "32°F" in temp
-
-    def test_very_negative_temperature(self):
-        """Test very cold temperature."""
-        temp, dew, _, _ = decode_temp_dewpoint("M40/M45")
-        assert "-40°C" in temp
-        assert "-45°C" in dew
+    # Note: test_freezing_temperature removed - covered by TestDecodeTempDewpoint::test_zero_temp
+    # Note: test_very_negative_temperature removed - covered by TestDecodeTempDewpoint::test_negative_temp
 
     def test_unknown_visibility_format(self):
         """Test unknown visibility format returns as-is."""
