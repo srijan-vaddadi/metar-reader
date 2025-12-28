@@ -11,6 +11,7 @@ Tests cover:
     - Altimeter settings (US and international)
     - Remarks decoding (AO2, SLP, precipitation, etc.)
     - Flight category determination (VFR/MVFR/IFR/LIFR)
+    - TAF decoding (Terminal Aerodrome Forecast)
     - Flask routes (index and METAR endpoint)
 
 Run with: pytest test_app.py -v
@@ -32,8 +33,12 @@ from app import (
     get_cardinal_direction,
     determine_flight_category,
     fetch_metar,
+    fetch_taf,
     generate_summary,
     calculate_relative_humidity,
+    decode_taf,
+    decode_taf_period,
+    generate_taf_summary,
 )
 
 
@@ -760,6 +765,254 @@ class TestFetchMetar:
 
 
 # =============================================================================
+# Fetch TAF Tests (Mocked)
+# =============================================================================
+
+class TestFetchTaf:
+    """Tests for fetch_taf function with mocked responses."""
+
+    @patch('app.requests.get')
+    def test_successful_fetch(self, mock_get):
+        """Test successful TAF fetch."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.text = "TAF KJFK 271730Z 2718/2824 36015KT P6SM FEW250"
+        mock_get.return_value = mock_response
+
+        result = fetch_taf("KJFK")
+        assert result is not None
+        assert "KJFK" in result
+
+    @patch('app.requests.get')
+    def test_empty_response(self, mock_get):
+        """Test empty response returns None."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.text = ""
+        mock_get.return_value = mock_response
+
+        result = fetch_taf("XXXX")
+        assert result is None
+
+    @patch('app.requests.get')
+    def test_api_error(self, mock_get):
+        """Test API error returns None."""
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_get.return_value = mock_response
+
+        result = fetch_taf("KJFK")
+        assert result is None
+
+    @patch('app.requests.get')
+    def test_request_exception(self, mock_get):
+        """Test request exception returns None."""
+        import requests
+        mock_get.side_effect = requests.RequestException("Connection error")
+
+        result = fetch_taf("KJFK")
+        assert result is None
+
+
+# =============================================================================
+# TAF Decoding Tests
+# =============================================================================
+
+class TestDecodeTafPeriod:
+    """Tests for decode_taf_period function."""
+
+    def test_main_period(self):
+        """Test decoding main forecast period."""
+        result = decode_taf_period("36015KT P6SM FEW250", is_main=True)
+        assert result is not None
+        assert "North" in result['wind']
+        assert "15 knots" in result['wind']
+        assert result['visibility'] is not None
+        assert len(result['clouds']) > 0
+
+    def test_fm_period(self):
+        """Test decoding FM (From) period."""
+        result = decode_taf_period("FM281200 03012KT P6SM SCT040", is_main=False)
+        assert result is not None
+        assert result['type'] == 'FROM'
+        assert "12:00" in result['time']
+        assert "North" in result['wind']
+
+    def test_tempo_period(self):
+        """Test decoding TEMPO period."""
+        result = decode_taf_period("TEMPO 2718/2720 3SM -RA BKN020", is_main=False)
+        assert result is not None
+        assert result['type'] == 'TEMPORARY'
+        assert result['time'] is not None
+        assert len(result['weather']) > 0
+
+    def test_becmg_period(self):
+        """Test decoding BECMG period."""
+        result = decode_taf_period("BECMG 2720/2722 SKC", is_main=False)
+        assert result is not None
+        assert result['type'] == 'BECOMING'
+        assert len(result['clouds']) > 0
+
+    def test_prob_period(self):
+        """Test decoding PROB period."""
+        result = decode_taf_period("PROB30 2718/2720 1SM +TSRA", is_main=False)
+        assert result is not None
+        assert result['type'] == 'PROBABILITY'
+        assert "30%" in result['probability']
+
+    def test_cavok(self):
+        """Test CAVOK visibility and clouds."""
+        result = decode_taf_period("36010KT CAVOK", is_main=True)
+        assert result is not None
+        assert "10 km" in result['visibility']
+        assert any("5,000" in c for c in result['clouds'])
+
+    def test_nsw(self):
+        """Test NSW (No Significant Weather)."""
+        result = decode_taf_period("36010KT P6SM NSW SCT040", is_main=True)
+        assert result is not None
+        assert "No significant weather" in result['weather']
+
+    def test_none_input(self):
+        """Test None input returns None."""
+        assert decode_taf_period(None) is None
+
+    def test_empty_string(self):
+        """Test empty string returns None (falsy input)."""
+        result = decode_taf_period("")
+        # Empty string is falsy, so returns None
+        assert result is None
+
+
+class TestDecodeTaf:
+    """Tests for decode_taf function."""
+
+    def test_basic_taf(self):
+        """Test decoding a basic TAF."""
+        taf = "TAF KJFK 271730Z 2718/2824 36015KT P6SM FEW250"
+        result = decode_taf(taf)
+
+        assert result is not None
+        assert result['station'] == 'KJFK'
+        assert result['issued'] is not None
+        assert result['valid_from'] is not None
+        assert result['valid_to'] is not None
+        assert len(result['periods']) >= 1
+
+    def test_taf_with_fm(self):
+        """Test TAF with FM periods."""
+        taf = "TAF KJFK 271730Z 2718/2824 36015KT P6SM FEW250 FM280000 02010KT P6SM SCT040"
+        result = decode_taf(taf)
+
+        assert result is not None
+        assert len(result['periods']) >= 2
+        # Check for FROM period
+        from_periods = [p for p in result['periods'] if p.get('type') == 'FROM']
+        assert len(from_periods) >= 1
+
+    def test_taf_with_tempo(self):
+        """Test TAF with TEMPO periods."""
+        taf = "TAF KJFK 271730Z 2718/2824 36015KT P6SM SCT040 TEMPO 2718/2720 3SM -RA"
+        result = decode_taf(taf)
+
+        assert result is not None
+        tempo_periods = [p for p in result['periods'] if p.get('type') == 'TEMPORARY']
+        assert len(tempo_periods) >= 1
+
+    def test_taf_with_becmg(self):
+        """Test TAF with BECMG periods."""
+        taf = "TAF KJFK 271730Z 2718/2824 36015KT 3SM BR OVC010 BECMG 2720/2722 P6SM SKC"
+        result = decode_taf(taf)
+
+        assert result is not None
+        becmg_periods = [p for p in result['periods'] if p.get('type') == 'BECOMING']
+        assert len(becmg_periods) >= 1
+
+    def test_taf_amended(self):
+        """Test amended TAF."""
+        taf = "TAF AMD KJFK 271730Z 2718/2824 36015KT P6SM FEW250"
+        result = decode_taf(taf)
+
+        assert result is not None
+        assert result['station'] == 'KJFK'
+
+    def test_complex_taf(self):
+        """Test complex TAF with multiple periods."""
+        taf = """TAF KJFK 271730Z 2718/2824 36015KT P6SM FEW250
+                 FM280000 02010KT P6SM SCT040
+                 FM281200 03012KT P6SM BKN025
+                 TEMPO 2812/2816 2SM -RA BKN015"""
+        result = decode_taf(taf)
+
+        assert result is not None
+        assert result['station'] == 'KJFK'
+        assert len(result['periods']) >= 3
+
+    def test_none_input(self):
+        """Test None input returns None."""
+        assert decode_taf(None) is None
+
+    def test_empty_string(self):
+        """Test empty string returns None."""
+        assert decode_taf("") is None
+
+
+class TestGenerateTafSummary:
+    """Tests for generate_taf_summary function."""
+
+    def test_full_summary(self):
+        """Test generating summary from decoded TAF."""
+        decoded = {
+            'station': 'KJFK',
+            'issued': 'Day 27 at 17:30 UTC',
+            'valid_from': 'Day 27 at 18:00 UTC',
+            'valid_to': 'Day 28 at 24:00 UTC',
+            'periods': [
+                {
+                    'type': 'INITIAL',
+                    'wind': 'From North at 15 knots',
+                    'visibility': 'Greater than 6 miles',
+                    'clouds': ['Few clouds at 25,000 feet'],
+                    'weather': []
+                },
+                {
+                    'type': 'FROM',
+                    'time': 'From day 28 at 00:00 UTC',
+                    'wind': 'From North at 10 knots',
+                    'visibility': 'Greater than 6 miles',
+                    'clouds': ['Scattered clouds at 4,000 feet'],
+                    'weather': []
+                }
+            ]
+        }
+
+        result = generate_taf_summary(decoded)
+
+        assert 'KJFK' in result
+        assert 'INITIAL' in result
+        assert 'FROM' in result
+        assert 'North' in result
+
+    def test_none_input(self):
+        """Test None input returns error message."""
+        result = generate_taf_summary(None)
+        assert "Unable to decode" in result
+
+    def test_empty_periods(self):
+        """Test TAF with no periods."""
+        decoded = {
+            'station': 'KJFK',
+            'issued': None,
+            'valid_from': None,
+            'valid_to': None,
+            'periods': []
+        }
+
+        result = generate_taf_summary(decoded)
+        assert 'KJFK' in result
+
+
+# =============================================================================
 # Generate Summary Tests
 # =============================================================================
 
@@ -1264,10 +1517,12 @@ class TestMetarEndpoint:
         # Verify fetch_metar was called with uppercase
         mock_fetch.assert_called_with('KJFK')
 
+    @patch('app.fetch_taf')
     @patch('app.fetch_metar')
-    def test_metar_response_structure(self, mock_fetch, client):
+    def test_metar_response_structure(self, mock_fetch_metar, mock_fetch_taf, client):
         """Test the structure of a successful METAR response."""
-        mock_fetch.return_value = "METAR KORD 271951Z 18015KT 5SM -RA BKN010 05/04 A2990"
+        mock_fetch_metar.return_value = "METAR KORD 271951Z 18015KT 5SM -RA BKN010 05/04 A2990"
+        mock_fetch_taf.return_value = None
 
         response = client.post('/metar', data={'airport_code': 'KORD'})
         json_data = response.get_json()
@@ -1277,6 +1532,10 @@ class TestMetarEndpoint:
         assert 'raw_metar' in json_data
         assert 'decoded' in json_data
         assert 'summary' in json_data
+        # TAF fields should be present (even if None)
+        assert 'raw_taf' in json_data
+        assert 'taf_decoded' in json_data
+        assert 'taf_summary' in json_data
 
         # Check decoded structure
         decoded = json_data['decoded']
@@ -1289,6 +1548,22 @@ class TestMetarEndpoint:
         assert 'dewpoint' in decoded
         assert 'altimeter' in decoded
         assert 'flight_category' in decoded
+
+    @patch('app.fetch_taf')
+    @patch('app.fetch_metar')
+    def test_metar_with_taf(self, mock_fetch_metar, mock_fetch_taf, client):
+        """Test response includes TAF when available."""
+        mock_fetch_metar.return_value = "METAR KJFK 271951Z 36009KT 10SM FEW250 05/03 A3014"
+        mock_fetch_taf.return_value = "TAF KJFK 271730Z 2718/2824 36015KT P6SM FEW250"
+
+        response = client.post('/metar', data={'airport_code': 'KJFK'})
+        json_data = response.get_json()
+
+        assert json_data['success'] is True
+        assert json_data['raw_taf'] is not None
+        assert json_data['taf_decoded'] is not None
+        assert json_data['taf_decoded']['station'] == 'KJFK'
+        assert json_data['taf_summary'] is not None
 
     @patch('app.fetch_metar')
     def test_metar_with_weather_phenomena(self, mock_fetch, client):

@@ -90,6 +90,22 @@ def fetch_metar(airport_code):
         return None
 
 
+def fetch_taf(airport_code):
+    """Fetch TAF (Terminal Aerodrome Forecast) data from Aviation Weather API."""
+    url = f"https://aviationweather.gov/api/data/taf?ids={airport_code.upper()}"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            taf_text = response.text.strip()
+            if taf_text:
+                return taf_text
+            else:
+                return None
+        return None
+    except requests.RequestException:
+        return None
+
+
 def decode_wind(wind_str):
     """Decode wind information."""
     if not wind_str:
@@ -741,6 +757,271 @@ def generate_summary(decoded):
     return '\n'.join(summary_parts)
 
 
+def decode_taf_period(period_str, is_main=False):
+    """Decode a single TAF forecast period.
+
+    Args:
+        period_str: The TAF period string to decode
+        is_main: True if this is the main forecast, False for FM/TEMPO/BECMG
+
+    Returns:
+        Dictionary with decoded period information
+    """
+    if not period_str:
+        return None
+
+    parts = period_str.split()
+    decoded = {
+        'raw': period_str,
+        'type': 'MAIN' if is_main else None,
+        'time': None,
+        'wind': None,
+        'visibility': None,
+        'weather': [],
+        'clouds': [],
+        'probability': None,
+    }
+
+    i = 0
+
+    # Check for period type (FM, TEMPO, BECMG, PROB)
+    if not is_main and i < len(parts):
+        part = parts[i]
+        if part.startswith('FM'):
+            decoded['type'] = 'FROM'
+            # FM followed by time (e.g., FM271200)
+            time_str = part[2:]
+            if len(time_str) >= 4:
+                day = time_str[:2]
+                hour = time_str[2:4]
+                minute = time_str[4:6] if len(time_str) >= 6 else '00'
+                decoded['time'] = f"From day {day} at {hour}:{minute} UTC"
+            i += 1
+        elif part == 'TEMPO':
+            decoded['type'] = 'TEMPORARY'
+            i += 1
+        elif part == 'BECMG':
+            decoded['type'] = 'BECOMING'
+            i += 1
+        elif part.startswith('PROB'):
+            prob_match = re.match(r'PROB(\d{2})', part)
+            if prob_match:
+                decoded['probability'] = f"{prob_match.group(1)}% probability"
+                decoded['type'] = 'PROBABILITY'
+            i += 1
+
+    # Parse time period for TEMPO/BECMG (e.g., 2718/2724)
+    if i < len(parts) and re.match(r'^\d{4}/\d{4}$', parts[i]):
+        time_match = re.match(r'^(\d{2})(\d{2})/(\d{2})(\d{2})$', parts[i])
+        if time_match:
+            start_day, start_hour = time_match.group(1), time_match.group(2)
+            end_day, end_hour = time_match.group(3), time_match.group(4)
+            decoded['time'] = f"Day {start_day} {start_hour}:00 to day {end_day} {end_hour}:00 UTC"
+        i += 1
+
+    # Parse remaining elements (wind, visibility, weather, clouds)
+    while i < len(parts):
+        part = parts[i]
+
+        # Wind
+        if ('KT' in part or 'MPS' in part) and re.match(r'^(\d{3}|VRB)\d{2,3}', part):
+            decoded['wind'] = decode_wind(part)
+            i += 1
+            continue
+
+        # Visibility (US format P6SM, 6SM, etc.)
+        if 'SM' in part:
+            vis_str = part
+            if part.startswith('P'):
+                vis_str = part[1:]  # Remove P prefix for "plus"
+                decoded['visibility'] = "Greater than " + decode_visibility(vis_str)
+            else:
+                decoded['visibility'] = decode_visibility(part)
+            i += 1
+            continue
+
+        # Visibility (meters - 4 digit number)
+        if part.isdigit() and len(part) == 4:
+            decoded['visibility'] = decode_visibility(part)
+            i += 1
+            continue
+
+        # Cloud coverage
+        if any(part.startswith(code) for code in CLOUD_CODES.keys()):
+            cloud = decode_clouds(part)
+            if cloud:
+                decoded['clouds'].append(cloud)
+            i += 1
+            continue
+
+        # Weather phenomena
+        if any(code in part for code in ['RA', 'SN', 'FG', 'BR', 'TS', 'SH', 'DZ', 'HZ']):
+            weather = decode_weather(part)
+            if weather:
+                decoded['weather'].append(weather)
+            i += 1
+            continue
+
+        # Special conditions
+        if part == 'NSW':
+            decoded['weather'].append('No significant weather')
+            i += 1
+            continue
+
+        if part == 'SKC' or part == 'CLR':
+            decoded['clouds'].append(CLOUD_CODES.get(part, part))
+            i += 1
+            continue
+
+        if part == 'CAVOK':
+            decoded['visibility'] = "Greater than 10 km (CAVOK)"
+            decoded['clouds'].append("No clouds below 5,000 ft")
+            i += 1
+            continue
+
+        i += 1
+
+    return decoded
+
+
+def decode_taf(taf_text):
+    """Decode a complete TAF report.
+
+    Args:
+        taf_text: Raw TAF text string
+
+    Returns:
+        Dictionary with decoded TAF information
+    """
+    if not taf_text:
+        return None
+
+    # Split into lines and rejoin (TAFs often have line breaks)
+    taf_text = ' '.join(taf_text.split())
+
+    decoded = {
+        'raw': taf_text,
+        'station': None,
+        'issued': None,
+        'valid_from': None,
+        'valid_to': None,
+        'periods': [],
+    }
+
+    # Split by FM, TEMPO, BECMG, PROB to get periods
+    # First, extract the header and main forecast
+    pattern = r'\s+(FM\d{6}|TEMPO|BECMG|PROB\d{2})'
+    parts = re.split(pattern, taf_text)
+
+    if not parts:
+        return decoded
+
+    # Parse header (first part)
+    header = parts[0].split()
+    i = 0
+
+    # Skip TAF prefix
+    if i < len(header) and header[i] in ['TAF', 'TAF AMD']:
+        i += 1
+    if i < len(header) and header[i] == 'AMD':
+        i += 1
+
+    # Station identifier
+    if i < len(header) and re.match(r'^[A-Z]{4}$', header[i]):
+        decoded['station'] = header[i]
+        i += 1
+
+    # Issue time
+    if i < len(header) and re.match(r'^\d{6}Z$', header[i]):
+        time_str = header[i]
+        day = time_str[:2]
+        hour = time_str[2:4]
+        minute = time_str[4:6]
+        decoded['issued'] = f"Day {day} at {hour}:{minute} UTC"
+        i += 1
+
+    # Valid period
+    if i < len(header) and re.match(r'^\d{4}/\d{4}$', header[i]):
+        valid_match = re.match(r'^(\d{2})(\d{2})/(\d{2})(\d{2})$', header[i])
+        if valid_match:
+            start_day, start_hour = valid_match.group(1), valid_match.group(2)
+            end_day, end_hour = valid_match.group(3), valid_match.group(4)
+            decoded['valid_from'] = f"Day {start_day} at {start_hour}:00 UTC"
+            decoded['valid_to'] = f"Day {end_day} at {end_hour}:00 UTC"
+        i += 1
+
+    # Main forecast (rest of header after valid period)
+    main_forecast = ' '.join(header[i:])
+    if main_forecast:
+        main_period = decode_taf_period(main_forecast, is_main=True)
+        if main_period:
+            main_period['type'] = 'INITIAL'
+            decoded['periods'].append(main_period)
+
+    # Parse subsequent periods (FM, TEMPO, BECMG, PROB)
+    j = 1
+    while j < len(parts):
+        period_type = parts[j] if j < len(parts) else ''
+        period_content = parts[j + 1] if j + 1 < len(parts) else ''
+
+        if period_type and period_content:
+            full_period = period_type + ' ' + period_content.strip()
+            period = decode_taf_period(full_period, is_main=False)
+            if period:
+                decoded['periods'].append(period)
+        j += 2
+
+    return decoded
+
+
+def generate_taf_summary(decoded):
+    """Generate a human-readable TAF summary.
+
+    Args:
+        decoded: Decoded TAF dictionary
+
+    Returns:
+        Formatted string summary
+    """
+    if not decoded:
+        return "Unable to decode TAF data."
+
+    lines = []
+
+    if decoded['station']:
+        lines.append(f"Forecast for {decoded['station']}")
+
+    if decoded['issued']:
+        lines.append(f"Issued: {decoded['issued']}")
+
+    if decoded['valid_from'] and decoded['valid_to']:
+        lines.append(f"Valid: {decoded['valid_from']} to {decoded['valid_to']}")
+
+    lines.append("")
+
+    for i, period in enumerate(decoded['periods']):
+        period_header = period.get('type', 'FORECAST')
+        if period.get('probability'):
+            period_header = period['probability']
+        if period.get('time') and period['type'] != 'INITIAL':
+            period_header += f" - {period['time']}"
+
+        lines.append(f"[{period_header}]")
+
+        if period.get('wind'):
+            lines.append(f"  Wind: {period['wind']}")
+        if period.get('visibility'):
+            lines.append(f"  Visibility: {period['visibility']}")
+        if period.get('clouds'):
+            lines.append(f"  Clouds: {', '.join(period['clouds'])}")
+        if period.get('weather'):
+            lines.append(f"  Weather: {', '.join(period['weather'])}")
+
+        lines.append("")
+
+    return '\n'.join(lines)
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -768,11 +1049,23 @@ def get_metar():
     # Generate summary
     summary = generate_summary(decoded)
 
+    # Fetch and decode TAF data
+    taf_text = fetch_taf(airport_code)
+    taf_decoded = None
+    taf_summary = None
+
+    if taf_text:
+        taf_decoded = decode_taf(taf_text)
+        taf_summary = generate_taf_summary(taf_decoded)
+
     return jsonify({
         'success': True,
         'raw_metar': metar_text,
         'decoded': decoded,
-        'summary': summary
+        'summary': summary,
+        'raw_taf': taf_text,
+        'taf_decoded': taf_decoded,
+        'taf_summary': taf_summary
     })
 
 

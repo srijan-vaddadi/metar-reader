@@ -283,6 +283,128 @@
             border-left: 3px solid #e94560;
         }
 
+        .taf-section {
+            margin-top: 30px;
+        }
+
+        .taf-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 30px;
+            backdrop-filter: blur(10px);
+        }
+
+        .taf-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .taf-title {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #e94560;
+        }
+
+        .taf-validity {
+            color: #a0a0a0;
+            font-size: 0.9rem;
+        }
+
+        .raw-taf {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.95rem;
+            letter-spacing: 0.5px;
+            word-break: break-word;
+            line-height: 1.6;
+        }
+
+        .raw-taf-label {
+            color: #a0a0a0;
+            font-size: 0.85rem;
+            margin-bottom: 10px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        .taf-periods {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .taf-period {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            border-left: 4px solid #533483;
+        }
+
+        .taf-period.initial {
+            border-left-color: #27ae60;
+        }
+
+        .taf-period.from {
+            border-left-color: #3498db;
+        }
+
+        .taf-period.tempo {
+            border-left-color: #f39c12;
+        }
+
+        .taf-period.becoming {
+            border-left-color: #9b59b6;
+        }
+
+        .taf-period.probability {
+            border-left-color: #e74c3c;
+        }
+
+        .taf-period-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .taf-period-type {
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .taf-period-time {
+            color: #a0a0a0;
+            font-size: 0.85rem;
+        }
+
+        .taf-period-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+
+        .taf-detail {
+            font-size: 0.95rem;
+        }
+
+        .taf-detail-label {
+            color: #a0a0a0;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
         .loading {
             text-align: center;
             padding: 40px;
@@ -485,9 +607,93 @@
                 `;
             }
 
+            // Build TAF section if available
+            let tafSection = '';
+            if (data.raw_taf && data.taf_decoded) {
+                const taf = data.taf_decoded;
+
+                let periodsHtml = '';
+                if (taf.periods && taf.periods.length > 0) {
+                    periodsHtml = taf.periods.map(period => {
+                        const periodType = (period.type || 'forecast').toLowerCase();
+                        let detailsHtml = '';
+
+                        if (period.wind) {
+                            detailsHtml += `
+                                <div class="taf-detail">
+                                    <div class="taf-detail-label">Wind</div>
+                                    <div>${period.wind}</div>
+                                </div>
+                            `;
+                        }
+                        if (period.visibility) {
+                            detailsHtml += `
+                                <div class="taf-detail">
+                                    <div class="taf-detail-label">Visibility</div>
+                                    <div>${period.visibility}</div>
+                                </div>
+                            `;
+                        }
+                        if (period.clouds && period.clouds.length > 0) {
+                            detailsHtml += `
+                                <div class="taf-detail">
+                                    <div class="taf-detail-label">Clouds</div>
+                                    <div>${period.clouds.join(', ')}</div>
+                                </div>
+                            `;
+                        }
+                        if (period.weather && period.weather.length > 0) {
+                            detailsHtml += `
+                                <div class="taf-detail">
+                                    <div class="taf-detail-label">Weather</div>
+                                    <div>${period.weather.join(', ')}</div>
+                                </div>
+                            `;
+                        }
+
+                        const timeDisplay = period.time ? `<div class="taf-period-time">${period.time}</div>` : '';
+                        const probDisplay = period.probability ? ` (${period.probability})` : '';
+
+                        return `
+                            <div class="taf-period ${periodType}">
+                                <div class="taf-period-header">
+                                    <div class="taf-period-type">${period.type || 'Forecast'}${probDisplay}</div>
+                                    ${timeDisplay}
+                                </div>
+                                <div class="taf-period-details">
+                                    ${detailsHtml || '<div class="taf-detail">No significant changes</div>'}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                }
+
+                const validityText = taf.valid_from && taf.valid_to
+                    ? `Valid: ${taf.valid_from} to ${taf.valid_to}`
+                    : '';
+
+                tafSection = `
+                    <div class="taf-section">
+                        <div class="raw-taf">
+                            <div class="raw-taf-label">Raw TAF (Terminal Aerodrome Forecast)</div>
+                            ${data.raw_taf}
+                        </div>
+                        <div class="taf-card">
+                            <div class="taf-header">
+                                <div class="taf-title">Weather Forecast</div>
+                                <div class="taf-validity">${validityText}</div>
+                            </div>
+                            <div class="taf-periods">
+                                ${periodsHtml}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
             results.innerHTML = `
                 <div class="raw-metar">
-                    <div class="raw-metar-label">Raw METAR</div>
+                    <div class="raw-metar-label">Raw METAR (Current Conditions)</div>
                     ${data.raw_metar}
                 </div>
                 <div class="weather-card">
@@ -501,6 +707,7 @@
                     </div>
                     ${remarksSection}
                 </div>
+                ${tafSection}
             `;
             results.classList.add('show');
         }
